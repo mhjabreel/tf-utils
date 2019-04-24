@@ -1,19 +1,35 @@
 import tensorflow as tf
 import numpy as np
 
+def _truncate_seq_pair(tokens_a, tokens_b, max_length):
+    """Truncates a sequence pair in place to the maximum length."""
+
+    # This is a simple heuristic which will always truncate the longer sequence
+    # one token at a time. This makes more sense than truncating an equal percent
+    # of tokens from each, since if one sequence is very short then each token
+    # that's truncated likely contains more information than a longer sequence.
+    while True:
+        total_length = len(tokens_a) + len(tokens_b)
+        if total_length <= max_length:
+            break
+        if len(tokens_a) > len(tokens_b):
+            tokens_a.pop()
+        else:
+            tokens_b.pop()
+
 
 class BertInputter:
     
-    def __init__(self, tokenizer, max_len):
+    def __init__(self, tokenizer, max_len, label_encoder=None):
         
         
         self._tokenizer = tokenizer
         self._max_len = max_len
         self._features = None
         self._labels = None
+        self._label_encoder = label_encoder 
     
-    
-    def _tokenize(self, sentence, aspect):
+    def _tokenize(self, sentence_a, sentence_b=None):
         
         # The convention in BERT is:
         # (a) For sequence pairs:
@@ -23,26 +39,34 @@ class BertInputter:
         #  tokens:   [CLS] the dog is hairy . [SEP]
         #  type_ids: 0     0   0   0  0     0 0
 
-        if tf.contrib.framework.is_tensor(sentence):
-            sentence = tf.compat.as_text(sentence.numpy())
+        if tf.contrib.framework.is_tensor(sentence_a):
+            sentence_a = tf.compat.as_text(sentence_a.numpy())
             
-        if tf.contrib.framework.is_tensor(aspect):
-            aspect = tf.compat.as_text(aspect.numpy())        
+        if sentence_b and tf.contrib.framework.is_tensor(sentence_b):
+            sentence_b = tf.compat.as_text(sentence_b.numpy())        
         
-        
-        tokens_a = self._tokenizer.tokenize(sentence)
-        tokens_b = self._tokenizer.tokenize(aspect)
+        tokens_a = self._tokenizer.tokenize(sentence_a)
 
-        n = len(tokens_a) + len(tokens_b) + 3
+        n = len(tokens_a) + 2
+
+        if sentence_b:
+            tokens_b = self._tokenizer.tokenize(sentence_b)
+            n += len(tokens_b) + 1
+
         if n > self._max_len:
-            k = self._max_len - (3 + len(tokens_b))
-            tokens_a = tokens_a[:k]
-            
-        tokens = ["[CLS]"] + tokens_a + ["[SEP]"] + tokens_b + ["[SEP]"]
-        type_ids = [0] * (len(tokens_a) + 2) + [1] * (len(tokens_b) + 1)
+            if sentence_b:
+                _truncate_seq_pair(tokens_a, tokens_b, self._max_len - 3)
+            else:
+                tokens_a = tokens_a[:self._max_len - 2]
+        
+        tokens = ["[CLS]"] + tokens_a + ["[SEP]"]
+        type_ids = [0] * (len(tokens_a) + 2)
+
+        if sentence_b:
+            tokens += tokens_b + ["[SEP]"]
+            type_ids += [1] * (len(tokens_b) + 1)
 
         ids = self._tokenizer.convert_tokens_to_ids(tokens)
-
         mask = [1] * len(ids)
 
         # Zero-pad up to the sequence length.
@@ -73,14 +97,14 @@ class BertInputter:
                      num_parallel_calls=None,
                      seed=None):
         
-        def sentiment_to_polarity(sentiment):
+        # def sentiment_to_polarity(sentiment):
             
-            if tf.contrib.framework.is_tensor(sentiment):
-                sentiment = tf.compat.as_text(sentiment.numpy())            
-            if sentiment == 'positive':
-                return 1.0
+        #     if tf.contrib.framework.is_tensor(sentiment):
+        #         sentiment = tf.compat.as_text(sentiment.numpy())            
+        #     if sentiment == 'positive':
+        #         return 1.0
             
-            return 0.0
+        #     return 0.0
         
         def parse_row(line):
             
@@ -97,7 +121,7 @@ class BertInputter:
             }
             
             if labelled:
-                polarity = tf.py_function(sentiment_to_polarity, 
+                polarity = tf.py_function(self._label_encoder, 
                                           [values[2]], 
                                           Tout=tf.float32)                
                 return features, polarity
